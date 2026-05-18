@@ -1,0 +1,8 @@
+[
+{
+  "directory": "C:/Users/user/src/tls_client_cpp/build",
+  "command": "C:\\PROGRA~1\\LLVM\\bin\\CLANG_~1.EXE -IC:/Users/user/src/tls_client_cpp/include -O3 -DNDEBUG -std=c++20 -D_DLL -D_MT -Xclang --dependent-lib=msvcrt -o CMakeFiles\\tls-client-cpp.dir\\src\\main.cpp.obj -c C:\\Users\\user\\src\\tls_client_cpp\\src\\main.cpp",
+  "file": "C:/Users/user/src/tls_client_cpp/src/main.cpp",
+  "output": "C:/Users/user/src/tls_client_cpp/build/CMakeFiles/tls-client-cpp.dir/src/main.cpp.obj"
+}
+]
