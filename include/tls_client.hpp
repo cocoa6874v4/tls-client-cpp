@@ -1,75 +1,123 @@
 #pragma once
-#include <Windows.h>
-#include <cstddef>
-#include <errhandlingapi.h>
-#include <iostream>
-#include <libloaderapi.h>
-#include <minwindef.h>
+
 #include <nlohmann/json.hpp>
 
-using json = nlohmann::json;
+#include <stdexcept>
+#include <string>
+
+#ifdef _WIN32
+#include <Windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 namespace tls_client {
+
 class Client {
   private:
     using RequestFunc = char* (*)(char*);
     using FreeMemoryFunc = void (*)(char*);
-    HMODULE hModule() {
-        HMODULE a = LoadLibraryA("tls-client-windows-64.dll");
 
-        if (a == NULL) {
-            std::cout << "LoadLibrary failed: " << GetLastError() << "\n";
-            return NULL;
+#ifdef _WIN32
+    using LibraryHandle = HMODULE;
+#else
+    using LibraryHandle = void*;
+#endif
+
+    LibraryHandle _library = nullptr;
+    RequestFunc _request = nullptr;
+    FreeMemoryFunc _freeMemory = nullptr;
+
+    static LibraryHandle loadLibrary(const std::string& path) {
+#ifdef _WIN32
+        auto handle = LoadLibraryA(path.c_str());
+
+        if (!handle) {
+            throw std::runtime_error("LoadLibrary failed: " + std::to_string(GetLastError()));
         }
 
-        return a;
-    };
+        return handle;
+#else
+        auto handle = dlopen(path.c_str(), RTLD_NOW);
 
-    RequestFunc request(HMODULE a) {
-        RequestFunc request = (RequestFunc)GetProcAddress(a, "request");
+        if (!handle) {
+            const char* error = dlerror();
 
-        if (!request) {
-            std::cout << "GetProcAddress failed: " << GetLastError() << "\n";
+            throw std::runtime_error(std::string("dlopen failed: ") +
+                                     (error ? error : "unknown error"));
         }
-        return request;
-    };
 
-    FreeMemoryFunc freeMemory(HMODULE a) {
-        FreeMemoryFunc freeMemory = (FreeMemoryFunc)GetProcAddress(a, "freeMemory");
+        return handle;
+#endif
+    }
 
-        if (!freeMemory) {
-            std::cout << "freeMemory GetProcAddress failed: " << GetLastError() << "\n";
+    template <typename T> static T loadSymbol(LibraryHandle library, const char* name) {
+#ifdef _WIN32
+        auto symbol = GetProcAddress(library, name);
+
+        if (!symbol) {
+            throw std::runtime_error(std::string("GetProcAddress failed for ") + name);
         }
-        return freeMemory;
-    };
 
-    HMODULE _hModule;
-    RequestFunc _request;
-    FreeMemoryFunc _freeMemory;
+        return reinterpret_cast<T>(symbol);
+#else
+        dlerror();
 
-  public:
-    Client() {
-        _hModule = hModule();
+        auto symbol = dlsym(library, name);
 
-        if (_hModule == NULL) {
-            _request = nullptr;
-            _freeMemory = nullptr;
+        const char* error = dlerror();
+
+        if (error) {
+            throw std::runtime_error(std::string("dlsym failed for ") + name + ": " + error);
+        }
+
+        return reinterpret_cast<T>(symbol);
+#endif
+    }
+
+    static void closeLibrary(LibraryHandle library) {
+        if (!library) {
             return;
         }
 
-        _request = request(_hModule);
-        _freeMemory = freeMemory(_hModule);
+#ifdef _WIN32
+        FreeLibrary(library);
+#else
+        dlclose(library);
+#endif
+    }
 
-        if (!_request || !_freeMemory) {
-            FreeLibrary(_hModule);
-            _hModule = NULL;
+    static std::string defaultLibraryPath() {
+#ifdef _WIN32
+        return "tls-client-windows-64.dll";
+#elif defined(__linux__)
+        return "./tls-client.so";
+#else
+#error Unsupported operating system
+#endif
+    }
+
+  public:
+    explicit Client(const std::string& libraryPath = defaultLibraryPath()) {
+        try {
+            _library = loadLibrary(libraryPath);
+
+            _request = loadSymbol<RequestFunc>(_library, "request");
+
+            _freeMemory = loadSymbol<FreeMemoryFunc>(_library, "freeMemory");
+        } catch (...) {
+            closeLibrary(_library);
+            _library = nullptr;
+            throw;
         }
     }
+
     ~Client() {
-        if (_hModule != NULL) {
-            FreeLibrary(_hModule);
-        }
+        closeLibrary(_library);
     }
+
+    Client(const Client&) = delete;
+    Client& operator=(const Client&) = delete;
 
     std::string client_identifier;
     std::string request_url;
@@ -79,18 +127,19 @@ class Client {
             throw std::runtime_error("tls-client library is not loaded");
         }
 
-        nlohmann::json Session;
+        nlohmann::json session;
 
-        Session["client_identifier"] = client_identifier;
-        Session["requestUrl"] = request_url;
-        Session["requestMethod"] = method;
+        session["client_identifier"] = client_identifier;
+        session["requestUrl"] = request_url;
+        session["requestMethod"] = method;
 
         nlohmann::json extra =
             payload.empty() ? nlohmann::json::object() : nlohmann::json::parse(payload);
 
-        Session.update(extra);
+        session.update(extra);
 
-        std::string body = Session.dump();
+        std::string body = session.dump();
+
         char* response = _request(const_cast<char*>(body.c_str()));
 
         if (!response) {
@@ -98,6 +147,7 @@ class Client {
         }
 
         std::string result(response);
+
         _freeMemory(response);
 
         return result;
@@ -119,4 +169,5 @@ class Client {
         return send("DELETE", payload);
     }
 };
+
 } // namespace tls_client
